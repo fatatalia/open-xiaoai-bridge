@@ -30,7 +30,9 @@ dist
 xiaozhi.json
 
 # Models (large files)
-core/models/
+# 模型文件（大，不跟踪），但唤醒词配置要跟踪
+core/models/*
+!core/models/keywords.txt
 
 # Local env files
 .env
