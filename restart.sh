@@ -1,51 +1,60 @@
 #!/bin/bash
-cd "/Users/fatatalia/project/open-xiaoai-bridge"
+# XiaoAI Bridge 重启脚本
+#
+# 2026-10-28 重写。
+# 旧版是 kill -9 掉 9092 上的进程，再 nohup 起一个裸进程 ——
+# 那条路现在会出事：bridge 由 launchd 的 KeepAlive 看着，
+# 你杀掉一个它马上补一个，而脚本自己也起了一个 ⇒ 两个进程抢 9092。
+#
+# 新版只做一件事：让 launchd 重启这个 job。唯一正确的通道。
+#
+# 用法: ./restart.sh
 
-# 清除代理环境变量，避免影响本地 WebSocket 直连
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY
+set -u
 
-# 加载环境变量
-PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin"
-export PATH
-source "$HOME/.local/bin/env" 2>/dev/null
+LABEL="system/com.fatatalia.xiaoai-bridge"
+PLIST="/Library/LaunchDaemons/com.fatatalia.xiaoai-bridge.plist"
+BRIDGE_DIR="/Users/fatatalia/project/open-xiaoai-bridge"
 
-# 设置 DYLD_LIBRARY_PATH 供 sherpa-onnx 找 onnxruntime
-ONNX_LIB_DIR="$(uv run python -c "from pathlib import Path; import onnxruntime; print(Path(onnxruntime.__file__).parent / 'capi')" 2>/dev/null)"
-[ -n "$ONNX_LIB_DIR" ] && export DYLD_LIBRARY_PATH="${ONNX_LIB_DIR}:${DYLD_LIBRARY_PATH:+$DYLD_LIBRARY_PATH}"
-
-# 1. 定义程序特征名（用于唯一识别进程）
-APP_NAME="open-xiaoai-bridge"
-
-# 2. 查找进程PID
-# 通过 API Server 监听端口（9092）检测，比 grep 命令名更可靠
-PID=$(lsof -ti :9092 2>/dev/null)
-
-# 3. 检查进程是否存在
-if [ -z "$PID" ]; then
-    echo ">> $APP_NAME 尚未运行."
-else
-    echo ">> 找到 $APP_NAME 进程 (PID: $PID), 正在停止..."
-    kill -9 $PID 2>/dev/null
-    # 等待端口释放（最多5秒）
-    for i in 1 2 3 4 5; do
-        if lsof -ti :9092 >/dev/null 2>&1; then
-            sleep 1
-        else
-            break
-        fi
-    done
-    echo ">> $APP_NAME 已停止."
+# ── 1. 确认 launchd 里注册了这个 job ──
+if ! launchctl print "$LABEL" >/dev/null 2>&1; then
+    echo "❌ launchd 里找不到 $LABEL"
+    echo "   检查 plist 是否存在: $PLIST"
+    echo "   手动加载: sudo launchctl load -w $PLIST"
+    exit 1
 fi
 
-echo "Starting Application..."
+# ── 2. 记录重启前的 PID，用来确认真的换了进程 ──
+OLD_PID=$(launchctl print "$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}')
 
-export API_SERVER_ENABLE=1
-export API_SERVER_HOST=0.0.0.0
-export DSH_ENABLE=1
-export LOGLEVEL=debug
-export DYLD_LIBRARY_PATH
+# ── 3. 重启。kickstart -k = 先 SIGTERM 停掉，再拉起 ──
+echo ">> 重启 $LABEL (旧 PID: ${OLD_PID:-无}) ..."
+if ! launchctl kickstart -k "$LABEL" 2>/dev/null; then
+    echo "❌ kickstart 失败"
+    exit 1
+fi
 
-# 统一用 disown 启动，避免 nohup 与 disown 的行为差异
-./scripts/start.sh < /dev/null > ./log/api.log 2>&1 &
-disown
-echo "Application started."
+# ── 4. 等新进程出现（最多 15 秒）──
+for _ in $(seq 1 15); do
+    sleep 1
+    NEW_PID=$(launchctl print "$LABEL" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}')
+    if [ -n "${NEW_PID:-}" ] && [ "$NEW_PID" != "${OLD_PID:-}" ]; then
+        echo ">> 已重启，新 PID: $NEW_PID"
+        # 顺手确认 9092 端口回来了（API Server 是 restart 的主要用途）
+        for _ in $(seq 1 10); do
+            if lsof -ti :9092 >/dev/null 2>&1; then
+                echo ">> 9092 端口已监听"
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "⚠️  进程起来了，但 9092 还没监听（可能仍在初始化，或 API_SERVER_ENABLE 没开）"
+        exit 0
+    fi
+done
+
+# ── 5. 超时 ──
+echo "⚠️  15 秒内没检测到新 PID"
+echo "   看日志: $BRIDGE_DIR/log/api.log"
+launchctl print "$LABEL" 2>/dev/null | grep -E "state = |pid = |last exit" | sed 's/^/   /'
+exit 1
