@@ -162,8 +162,12 @@ class OpenClawConversationController:
         try:
             await self._conversation_loop()
         except Exception as exc:
+            # 2026-10-28: 补完整调用栈。原来只打一行 type+message，
+            # 会话循环一炸根本看不出是哪一步出的问题。（移植上游 33275d1）
+            import traceback
             logger.error(
-                f"Conversation loop error: {type(exc).__name__}: {exc}",
+                f"Conversation loop error: {type(exc).__name__}: {exc}\n"
+                f"{traceback.format_exc()}",
                 module="OpenClaw Conv",
             )
         finally:
@@ -649,4 +653,19 @@ class OpenClawConversationController:
             speaker = get_speaker()
             if speaker:
                 backend = _resolve_backend()
-                await after_wakeup(speaker, source="openclaw", session_key=backend._session_key)
+                # 2026-10-28: after_wakeup 是用户配置的回调，内部抛异常
+                # （比如解析 session_key 越界）不该把整个会话退出流程带崩。
+                # （移植上游 5c30b07）
+                try:
+                    await after_wakeup(
+                        speaker,
+                        source="openclaw",
+                        session_key=backend._session_key,
+                    )
+                except Exception as exc:
+                    import traceback
+                    logger.error(
+                        f"after_wakeup hook error: {type(exc).__name__}: {exc}\n"
+                        f"{traceback.format_exc()}",
+                        module="OpenClaw Conv",
+                    )
