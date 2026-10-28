@@ -29,38 +29,22 @@ def should_generate_keywords():
     # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
     openclaw_env = os.environ.get("OPENCLAW_ENABLE") or os.environ.get("OPENCLAW_ENABLED") or ""
     openclaw_enabled = openclaw_env.lower() in ("1", "true", "yes")
-    openai_enabled = os.environ.get("OPENAI_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    qwenpaw_enabled = os.environ.get("QWENPAW_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
 
-    if (
-        not xiaozhi_enabled
-        and not openclaw_enabled
-        and not openai_enabled
-        and not qwenpaw_enabled
-    ):
-        return False, "XIAOZHI_ENABLE, OPENCLAW_ENABLE/OPENCLAW_ENABLED, OPENAI_ENABLE and QWENPAW_ENABLE are all disabled"
+    if not xiaozhi_enabled and not openclaw_enabled:
+        return False, "XIAOZHI_ENABLE and OPENCLAW_ENABLE/OPENCLAW_ENABLED are both disabled"
 
     return True, ""
 
 
 def get_args():
     config = ConfigManager.instance()
-    tokens_type = "cjkchar+bpe"
+    tokens_type = "ppinyin"
     tokens = get_model_file_path("tokens.txt")
     bpe_model = get_model_file_path("bpe.model")
     output = get_model_file_path("keywords.txt")
     keywords = config.get_app_config("wakeup.keywords", [])
     texts = [f"{keyword.upper()}" for keyword in keywords]
     return locals()
-
 
 def main():
     should_run, reason = should_generate_keywords()
@@ -84,19 +68,20 @@ def main():
     from sherpa_onnx import text2token
 
     args = get_args()
+    logger.debug(f"texts: {args['texts']}", module="KWS")
     encoded_texts = text2token(
         args["texts"],
         tokens=args["tokens"],
-        tokens_type=args["tokens_type"],
-        bpe_model=args["bpe_model"],
+	tokens_type=args["tokens_type"],
     )
     with open(args["output"], "w", encoding="utf8") as f:
-        for _, txt in enumerate(encoded_texts):
+        for i, txt in enumerate(encoded_texts):
             line = "".join(txt)
             if re.match(r"^[▁A-Z\s]+$", line):
                 f.write(" ".join(txt) + "\n")
             else:
-                f.write(" ".join(txt) + f" @{line}" + "\n")
+                #f.write(" ".join(txt) + f" @{line}" + "\n")
+                f.write(" ".join(txt) + f" @{args['texts'][i]}" + "\n")
     logger.debug(f"Keyword file generated: {args['output']}", module="KWS")
     return 0
 

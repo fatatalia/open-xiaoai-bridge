@@ -6,13 +6,13 @@
 
 [![New](https://img.shields.io/badge/🎉_新功能-OpenClaw_支持_自定义唤醒词_|_连续对话_|_多_Agent_路由_|_克隆音色_|_流式播放-f97316)](https://github.com/coderzc/open-xiaoai-bridge/releases)
 
-**小爱音箱与外部 AI 服务（小智 AI、OpenClaw、OpenAI 兼容服务、QwenPaw）的桥接器**
+**小爱音箱与外部 AI 服务（小智 AI、OpenClaw）的桥接器**
 
 打破小爱音箱的封闭生态，灵活接入多种 AI 服务，提供 HTTP API 实现远程控制。
 
 [📺 演示 ①](https://www.bilibili.com/video/BV1DHcBz1Ex7) · [📺 演示 ②](https://www.bilibili.com/video/BV1UQQSBHEvg)
 
-[📖 快速开始](#-快速开始) · [🔊 TTS 配置](#-tts-配置) · [🔌 OpenAI 兼容服务](#-openai-兼容服务) · [🐾 QwenPaw 集成](#-qwenpaw-集成) · [🦞 OpenClaw 集成](#-openclaw-集成) · [🔧 API 文档](#-api-server) · [🐛 常见问题](#-常见问题)
+[📖 快速开始](#-快速开始) · [🦞 OpenClaw 集成](#-openclaw-集成) · [🔧 API 文档](#-api-server) · [🐛 常见问题](#-常见问题)
 
 > 本项目受 [Open-XiaoAI](https://github.com/idootop/open-xiaoai) 启发，并参考其 `examples/xiaozhi/` 示例演进而来，现已作为独立项目持续维护。
 
@@ -24,8 +24,6 @@
 
 | 功能                 | 说明                                                                             |
 | ------------------ | ------------------------------------------------------------------------------ |
-| 🔌 **OpenAI 兼容服务** | 接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等 `/v1/chat/completions` 服务 |
-| 🐾 **QwenPaw 集成**   | 接入 [QwenPaw](https://github.com/agentscope-ai/QwenPaw) HTTP Console 任务接口，支持指定 Agent 和会话 |
 | 🦞 **OpenClaw 集成** | 接入 [OpenClaw](https://github.com/openclaw/openclaw)，支持连续对话，可选豆包 TTS 或小爱原生 TTS  |
 | 🤖 **小智 AI 集成**    | 接入 [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) 实时音频流 |
 | 🎙️ **自定义唤醒词**     | 支持中英文，不同唤醒词可路由到不同 AI 服务或不同 OpenClaw Agent                                      |
@@ -50,9 +48,9 @@
 
 ### 📥 模型文件
 
-如果你启用小智 AI，或 OpenClaw / OpenAI 兼容服务 / QwenPaw 连续对话使用 `local_asr`，需要下载 `VAD + KWS + ASR` 模型文件。
+如果你启用小智 AI，或 OpenClaw 连续对话使用 `local_asr`，需要下载 `VAD + KWS + ASR` 模型文件。
 
-如果 OpenClaw / OpenAI 兼容服务 / QwenPaw 连续对话使用 `xiaoai_asr`，只需要 `VAD + KWS`，不需要本地 ASR 模型。
+如果 OpenClaw 连续对话使用 `xiaoai_asr`，只需要 `VAD + KWS`，不需要本地 ASR 模型。
 
 1. 从 [releases](https://github.com/coderzc/open-xiaoai-bridge/releases/tag/vad-kws-asr-models) 下载模型压缩包
 2. 解压模型文件（路径见下方具体部署方式）
@@ -75,7 +73,7 @@ docker compose up -d
 > image: ghcr.nju.edu.cn/coderzc/open-xiaoai-bridge:latest
 > ```
 
-> **💡 容器访问宿主机服务**：如果需要让容器访问宿主机上的 OpenClaw / QwenPaw，请查看 [Docker 常见问题](#-docker)。
+> **💡 容器访问宿主机 OpenClaw**：如果需要让容器访问宿主机上的 OpenClaw，请查看 [Docker 常见问题](#-docker)。
 
 `docker-compose.yml` 已包含模型目录挂载：
 
@@ -96,10 +94,7 @@ cd open-xiaoai-bridge
 # Linux 还需要: pkg-config, patchelf
 
 # 启动（按需设置环境变量）
-API_SERVER_ENABLE=1 XIAOZHI_ENABLE=1 OPENCLAW_ENABLE=1 OPENAI_ENABLE=1 QWENPAW_ENABLE=1 ./scripts/start.sh
-
-# 启用 Client 鉴权（需与音箱端 token 一致）
-OPEN_XIAOAI_TOKEN=your-secret-token API_SERVER_ENABLE=1 ./scripts/start.sh
+API_SERVER_ENABLE=1 XIAOZHI_ENABLE=1 OPENCLAW_ENABLE=1 ./scripts/start.sh
 ```
 
 ### ⚙️ 环境变量
@@ -108,13 +103,10 @@ OPEN_XIAOAI_TOKEN=your-secret-token API_SERVER_ENABLE=1 ./scripts/start.sh
 | -------------------- | ------------- | ------------- |
 | `XIAOZHI_ENABLE`     | 启用小智 AI     | 禁用            |
 | `OPENCLAW_ENABLE`    | 启用 OpenClaw | 禁用            |
-| `OPENAI_ENABLE` | 启用 OpenAI 兼容服务 | 禁用        |
-| `QWENPAW_ENABLE` | 启用 QwenPaw | 禁用        |
 | `API_SERVER_ENABLE`  | 启用 HTTP API | 禁用            |
 | `AUDIO_INPUT_ENABLE` | 启用音频输入（关闭后小智/KWS/local\_asr不可用） | 启用            |
 | `API_SERVER_HOST`    | API 监听地址    | `127.0.0.1`   |
 | `API_SERVER_PORT`    | API 监听端口    | `9092`        |
-| `OPEN_XIAOAI_TOKEN`  | Client 鉴权 token，设置后仅持有相同 token 的 Client 才能连接 | 不鉴权 |
 | `CONFIG_PATH`        | 自定义配置文件路径   | `./config.py` |
 | `LOGLEVEL`           | 日志级别        | `INFO`        |
 
@@ -164,7 +156,7 @@ flowchart TB
         subgraph ServicesLayer["服务层（可选）"]
             direction LR
             APIServer["API Server<br/>HTTP :9092"]
-            TTSModule["TTS<br/>Doubao / MLX-Audio"]
+            TTSModule["Doubao TTS"]
         end
     end
 
@@ -344,274 +336,6 @@ curl -X POST http://localhost:9092/api/interrupt
 
 ***
 
-## 🔊 TTS 配置
-
-Bridge 的 TTS provider 配置跟随各个后端，配置层级保持不变：
-
-- `openai.tts_provider`、`openclaw.tts_provider` 和 `qwenpaw.tts_provider` 都可以选择小爱原生、豆包、官方 OpenAI / 兼容服务或本地 MLX-Audio。
-- 各后端继续使用自己的 `tts_speaker`、`session_tts_speakers` 或 `agent_tts_speakers`；不填写 `tts_provider` 时，保持旧逻辑：`xiaoai` 使用小爱原生，其他音色 ID 使用豆包。
-
-### 选择 TTS provider
-
-在对应后端配置中增加 `tts_provider` 即可，原有的 `tts_speaker` 不需要删除：
-
-```python
-"openai": {
-    "tts_provider": "mlx_audio",  # xiaoai / doubao / openai / mlx_audio
-    "tts_speaker": "xiaoai",
-}
-```
-
-同样的字段也可以放在 `openclaw` 和 `qwenpaw` 中：
-
-```python
-"openclaw": {
-    "tts_provider": "doubao",
-    "tts_speaker": "zh_male_raphael_bigtts",
-},
-"qwenpaw": {
-    "tts_provider": "xiaoai",
-    "tts_speaker": "xiaoai",
-}
-```
-
-| `tts_provider` | 运行位置 | 额外配置 |
-|---|---|---|
-| `xiaoai` | 音箱本地原生 TTS | 无，音色由小爱设备决定 |
-| `doubao` | 火山引擎云端 TTS | `tts.doubao`，需要 `app_id` 和 `access_key` |
-| `openai` | 官方 OpenAI 或其他兼容服务 | `tts.openai` |
-| `mlx_audio` | Mac 本地 MLX-Audio 服务 | `tts.mlx_audio` |
-
-### 小爱原生 TTS
-
-不需要启动额外服务，直接使用音箱自带的合成能力：
-
-```python
-"openai": {
-    "tts_provider": "xiaoai",
-    "tts_speaker": "xiaoai",
-}
-```
-
-### 豆包 TTS
-
-先在 [火山引擎语音合成控制台](https://www.volcengine.com/docs/6561/1871062) 开通服务，然后配置鉴权信息和默认音色：
-
-```python
-"tts": {
-    "doubao": {
-        "app_id": "你的 App ID",
-        "access_key": "你的 Access Key",
-        "default_speaker": "zh_female_vv_uranus_bigtts",
-        "audio_format": "pcm",
-        "stream": True,
-    },
-},
-"openai": {
-    "tts_provider": "doubao",
-    # 填豆包音色 ID 可覆盖 default_speaker；填 xiaoai 则使用 default_speaker
-    "tts_speaker": "xiaoai",
-}
-```
-
-音色 ID 见 [火山引擎音色库](https://www.volcengine.com/docs/6561/1257544?lang=zh)。豆包的流式配置和声音复刻说明见下方 [豆包 TTS 常见问题](#-豆包-tts-常见问题)。
-
-### OpenAI / 兼容服务 TTS
-
-适用于官方 OpenAI，以及实现 `POST /v1/audio/speech` 的其他服务。在需要使用它的后端中配置 `tts_provider = "openai"`，然后填写共享的 `tts.openai`：
-
-```python
-"tts": {
-    "openai": {
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "your-api-key",
-        "model": "gpt-4o-mini-tts",
-        "voice": "alloy",
-        "instructions": "自然、放松地说话，不要播音腔。",
-        "response_format": "wav",
-        "speed": 1.0,
-        "timeout": 120,
-        "stream_format": "audio",
-        "extra_body": {},
-    },
-},
-"openai": {
-    "tts_provider": "openai",
-    "tts_speaker": "xiaoai",  # 改成具体 voice ID 可覆盖 tts.openai.voice
-}
-```
-
-适配器发送标准非流式字段：`model`、`input`、`voice`、`instructions`、`response_format` 和 `speed`。当前音箱播放链路支持 `mp3`、`flac`、`wav`、`ogg`、`pcm`；协议层虽然接受 `opus` 和 `aac`，但这两种格式不适合作为 Bridge 的音箱播放格式。当前不支持流式 TTS，设置 `stream_format = "sse"` 或在 `extra_body` 中启用 `stream` 会明确报错。
-
-### MLX-Audio TTS
-
-适用于 Apple Silicon 本地部署的 [MLX-Audio](https://github.com/Blaizzy/mlx-audio) 服务。在需要使用它的后端中配置 `tts_provider = "mlx_audio"`；Bridge 在 Docker 中运行时，通过 `host.docker.internal` 访问 Mac 宿主机：
-
-```python
-"tts": {
-    "mlx_audio": {
-        "base_url": "http://host.docker.internal:8000/v1",
-        "api_key": "",
-        "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-6bit",
-        "mode": "voice_design",  # 或 "custom_voice"
-        "voice": None,             # VoiceDesign 不需要预设音色
-        "lang_code": "Chinese",
-        "response_format": "wav",
-        "speed": 1.0,
-        "instruct": "年轻男性，自然聊天，标准普通话，无明显地域口音。",
-        "timeout": 120,
-        "extra_body": {},
-    },
-},
-"openai": {
-    "tts_provider": "mlx_audio",
-    "tts_speaker": "xiaoai",
-}
-```
-
-`voice_design` 用 `instruct` 描述音色，`custom_voice` 使用模型提供的 `voice`。适配器复用 OpenAI TTS 的 HTTP、鉴权、超时和错误处理，同时把标准 `instructions` 映射为 MLX-Audio 的 `instruct`，并额外支持 `lang_code` 等本地模型参数。协议层支持 `wav`、`mp3`、`flac`、`ogg` 和 `opus`；交给音箱播放时建议使用 `wav`、`mp3`、`flac` 或 `ogg`，不支持 `stream=true`。
-
-### 音频格式与流式限制
-
-- 本地音箱播放优先使用 `wav`；云端服务可根据延迟和带宽选择 `mp3` 或 `pcm`。
-- OpenAI / MLX-Audio 适配器当前采用“完整音频文件 → 音箱播放”，不把 SSE 音频流当作完整文件处理。
-- 豆包 TTS 保留独立的 `stream` 配置，可使用 PCM 或 MP3 流式播放。
-
-***
-
-## 🔌 OpenAI 兼容服务
-
-用于接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等兼容 OpenAI Chat Completions 的服务。它是独立后端，不依赖 OpenClaw 协议。
-
-设置 `OPENAI_ENABLE=1` 启用。
-
-`config.py` 示例：
-
-```python
-"openai": {
-    "base_url": "http://127.0.0.1:8000/v1",
-    "api_key": "",
-    "model": "gpt-4o-mini",
-    "input_mode": "local_asr",  # 或 "xiaoai_asr"
-    "session_key": "default",
-    "system_prompt": "",
-    "temperature": 0.7,
-    "max_tokens": 512,
-    "history_max_messages": 20,
-    "tts_provider": "mlx_audio",  # 详见「🔊 TTS 配置」
-    "tts_speaker": "xiaoai",
-}
-```
-
-TTS provider 的选择和音频参数见上方 [🔊 TTS 配置](#-tts-配置)。
-
-触发连续对话时，在 `before_wakeup` 中返回 `"openai"`：
-
-```python
-async def before_wakeup(speaker, text, source, app):
-    if source == "kws" and "小黑" in text:
-        await speaker.play(text="小黑来了")
-        return "openai"
-
-    if source == "xiaoai" and text == "召唤小黑":
-        await speaker.abort_xiaoai()
-        return "openai"
-```
-
-单次发送并播报：
-
-```python
-if "让小黑" in text:
-    await speaker.abort_xiaoai()
-    await app.send_to_openai_and_play_reply(text.replace("让小黑", ""))
-    return None
-```
-
-`base_url` 可以直接填到 `/v1`，框架会自动调用 `/chat/completions`；如果你的服务已经给出完整 `/v1/chat/completions` 地址，也可以直接填写完整地址。连续对话会按 `session_key` 保存最近 `history_max_messages` 条上下文；需要隔离多个助手时，可在唤醒前调用 `app.set_openai_session_key("assistant-name")`。
-
-## 🐾 QwenPaw 集成
-
-用于接入阿里的 [QwenPaw](https://github.com/agentscope-ai/QwenPaw)。桥接器会调用 QwenPaw 的 HTTP Console 后台任务接口，将小爱音箱识别到的文本发送给指定 Agent，并把回复通过小爱或豆包 TTS 播放出来。
-
-推荐使用 Docker Compose 运行桥接器。先启动 QwenPaw（可在宿主机或同一 Docker 网络中运行），然后在 `docker-compose.yml` 中启用：
-
-```yaml
-services:
-  open-xiaoai-bridge:
-    environment:
-      - QWENPAW_ENABLE=1
-```
-
-修改完成后启动桥接器：
-
-```bash
-docker compose up -d
-```
-
-如果 QwenPaw 运行在宿主机，容器里的 `127.0.0.1` 指向容器自身，需将 `base_url` 改为宿主机可访问地址，例如宿主机局域网 IP：
-
-```python
-"qwenpaw": {
-    "base_url": "http://192.168.1.10:8088",
-    "agent_id": "default",
-    "session_key": "open-xiaoai-bridge",
-}
-```
-
-也可以按 [Docker 常见问题](#-docker) 使用 `network_mode: host`，此时可继续使用 `http://127.0.0.1:8088`。
-
-`config.py` 示例：
-
-```python
-"qwenpaw": {
-    "base_url": "http://127.0.0.1:8088",
-    "agent_id": "default",
-    "user_id": "open-xiaoai-bridge",
-    "input_mode": "local_asr",  # 或 "xiaoai_asr"
-    "session_key": "open-xiaoai-bridge",
-    "send_path": "/api/console/chat/task",
-    "task_status_path": "/api/console/chat/task/{task_id}",
-    "auth_token": "",
-    "tts_speaker": "xiaoai",
-}
-```
-
-触发连续对话时，在 `before_wakeup` 中返回 `"qwenpaw"`：
-
-```python
-async def before_wakeup(speaker, text, source, app):
-    if source == "kws" and "小爪" in text:
-        await speaker.play(text="小爪来了")
-        return "qwenpaw"
-
-    if source == "xiaoai" and text == "召唤小爪":
-        await speaker.abort_xiaoai()
-        return "qwenpaw"
-```
-
-单次发送并播报：
-
-```python
-if "让小爪" in text:
-    await speaker.abort_xiaoai()
-    await app.send_to_qwenpaw_and_play_reply(text.replace("让小爪", ""))
-    return None
-```
-
-`agent_id` 会通过 `X-Agent-Id` 请求头发送给 QwenPaw；`session_key` 对应 QwenPaw 请求里的 `session_id`，需要隔离多个对话时可在唤醒前调用 `app.set_qwenpaw_session_key("speaker-session")`。
-
-`auth_token` 是可选项，非空时程序默认会附带 `Authorization` 认证头，不需要额外配置 `auth_header` / `auth_scheme`。如果你的部署要求自定义认证头，可按需增加：
-
-```python
-"qwenpaw": {
-    "auth_header": "X-API-Key",
-    "auth_scheme": "",
-    "auth_token": "your-token",
-}
-```
-
-`auth_scheme` 设为空字符串时，请求头会直接发送 `auth_token` 原始值。
-
 ## 🦞 OpenClaw 集成
 
 通过 [OpenClaw](https://github.com/openclaw/openclaw) 将小爱音箱变成你的 AI Agent 终端。
@@ -710,7 +434,7 @@ async def before_wakeup(speaker, text, source, app):
     # 返回 None → 交给小爱原生处理
 ```
 
-**返回值含义：** `"openclaw"` → OpenClaw 连续对话，`"openai"` → OpenAI 兼容服务连续对话，`"qwenpaw"` → QwenPaw 连续对话，`"xiaozhi"` → 小智 AI，`None` → 不处理（用户可自行调用 `app.send_to_openclaw()` / `app.send_to_openai()` / `app.send_to_qwenpaw()` 等方法）
+**返回值含义：** `"openclaw"` → 连续对话，`"xiaozhi"` → 小智 AI，`None` → 不处理（用户可自行调用 `app.send_to_openclaw()` 等方法）
 
 ### 🧠 多 Agent 路由 — 一个唤醒词，一个专属 Agent
 
@@ -803,21 +527,12 @@ async def after_wakeup(speaker, source=None, session_key=None):
 
 ### 🎵 OpenClaw TTS 音色
 
-`openclaw.tts_provider` 决定使用哪一种 TTS provider，`openclaw.tts_speaker` 决定音色或 voice。现在可以这样配置：
-
-```python
-"openclaw": {
-    "tts_provider": "mlx_audio",
-    "tts_speaker": "xiaoai",  # 使用 tts.mlx_audio.voice 或 instruct
-}
-```
-
-如果不填写 `tts_provider`，则保持旧行为，`tts_speaker` 支持两种值：
+`openclaw.tts_speaker` 支持两种值：
 
 | 值          | 效果       | 说明                                                    |
 | ---------- | -------- | ----------------------------------------------------- |
 | `"xiaoai"` | 小爱原生 TTS | 零配置即可使用，音色由设备决定                                       |
-| 豆包音色 ID    | 豆包语音合成   | 需配置 `tts.doubao` 的 `app_id` 和 `access_key`，详见 [TTS 配置](#-tts-配置) |
+| 豆包音色 ID    | 豆包语音合成   | 需配置 `tts.doubao` 的 `app_id` 和 `access_key`，详见 [豆包 TTS 章节](#-豆包-tts) |
 
 如果希望不同 Agent 使用不同音色，可以配置 `openclaw.agent_tts_speakers`。它会根据当前 `session_key` 中的 `agentId` 选择对应音色；未命中时回退到 `openclaw.tts_speaker`。
 
@@ -876,13 +591,13 @@ APP_CONFIG = {
 
 ### 🐳 Docker
 
-1. **在容器里如何通过 `127.0.0.1` 直连宿主机上的 OpenClaw / QwenPaw？**
+1. **在容器里如何通过 `127.0.0.1` 直连宿主机上的 OpenClaw？**
 
     默认 `docker-compose.yml` 已经去掉了 `network_mode: host`，不需要再额外修改这一行。
 
     需要注意：桥接模式下，容器里的 `127.0.0.1` / `localhost` 指向的是**容器自己**，不是宿主机。
 
-    如果你希望通过 `127.0.0.1` 直连宿主机上的 OpenClaw / QwenPaw，使用 **方式 1**:
+    如果你希望通过 `127.0.0.1` 直连宿主机上的 OpenClaw，使用 **方式 1**:
 
     **方式 1：增加 `network_mode: host`**
 
@@ -896,7 +611,7 @@ APP_CONFIG = {
 
     **方式 2：通过网络 IP 连接（无需 host 模式）**
 
-    如果不使用 `network_mode: host`，可以让 OpenClaw / QwenPaw 监听 LAN，然后在容器里通过宿主机的局域网 IP 连接：
+    如果不使用 `network_mode: host`，可以让 OpenClaw 监听 LAN，然后在容器里通过宿主机的局域网 IP 连接：
 
     可以直接一起改成下面这样：
 
@@ -937,14 +652,12 @@ APP_CONFIG = {
 
 2. **如何切换 ASR 语音识别模型？**
 
-    仅 `openclaw.input_mode = "local_asr"` 时，ASR 配置才会生效。在 `config.py` 中配置：
+    仅 `openclaw.input_mode = "local_asr"` 时，本地离线 ASR 配置才会生效。在 `config.py` 中配置：
 
     ```python
     APP_CONFIG = {
         "asr": {
-            "model": "sense_voice",  # "sense_voice"（默认）/ "paraformer" / "fire_red_asr" / "doubao"
-            "int8": True,            # 本地模型优先加载 INT8 量化模型
-            # "model_dir": "sherpa-onnx-fire-red-asr-xxx",  # 可选：显式指定本地模型目录
+            "model": "sense_voice",  # "sense_voice"（默认）或 "paraformer"
         },
     }
     ```
@@ -953,41 +666,8 @@ APP_CONFIG = {
     |------|------|------|
     | `sense_voice` | [SenseVoice-Small](https://github.com/FunAudioLLM/SenseVoice) | 多任务语音理解模型，支持中/英/日/韩/粤五语种自动识别，附带语言检测、ITN 和情感识别，推理极快 |
     | `paraformer` | [Paraformer-Trilingual](https://github.com/modelscope/FunASR) | 专注语音转写的工业级非自回归模型，支持中文/英文/粤语，中文识别精度高 |
-    | `fire_red_asr` | [FireRedASR](https://github.com/FireRedTeam/FireRedASR) | FireRedASR 是一系列开源的工业级自动语音识别 (ASR) 模型，支持普通话、汉语方言和英语，在公开的普通话 ASR 基准测试中达到了新的最先进水平 (SOTA)，同时还提供了出色的歌词识别能力。 |
-    | `doubao` | [火山引擎豆包语音识别](https://www.volcengine.com/docs/6561/1354868?lang=zh) | 云端录音文件识别，支持标准版和极速版，需要配置火山引擎 App Key / Access Key |
 
-    使用本地模型时，将对应模型目录放到 `core/models/`（Docker 部署放 `./models/`）下即可，不配置默认使用 `sense_voice`。
-
-    使用豆包 ASR 时，将 `model` 改为 `"doubao"`，并填写 `asr.doubao`：
-
-    ```python
-    APP_CONFIG = {
-        "asr": {
-            "model": "doubao",
-            "doubao": {
-                # "standard": 录音文件识别标准版，调用 /submit + /query
-                # "flash": 录音文件极速版，调用 /recognize/flash
-                "mode": "standard",
-                "app_key": "你的 App Key",
-                "access_key": "你的 Access Key",
-                # 火山 X-Api-Resource-Id：
-                # standard 可选：
-                #   "volc.bigasr.auc"  - 豆包录音文件识别模型 1.0
-                #   "volc.seedasr.auc" - 豆包录音文件识别模型 2.0
-                # flash 可选：
-                #   "volc.bigasr.auc_turbo" - 录音文件极速版
-                "resource_id": "volc.seedasr.auc",
-                "language": "",
-                "submit_timeout": 10,
-                "query_timeout": 10,
-                "poll_interval": 0.5,
-                "max_wait_seconds": 20,
-            },
-        },
-    }
-    ```
-
-    `standard` 模式会把本地 PCM 封装为 wav 后以 base64 提交到标准版接口；如果你的火山账号不支持该请求形式，可切换为 `flash` 并将 `resource_id` 改为 `"volc.bigasr.auc_turbo"`。
+    将对应模型目录放到 `core/models/`（Docker 部署放 `./models/`）下即可，不配置默认使用 `sense_voice`。
 
 3. **如何打断 AI 的回答？**
 
@@ -1162,11 +842,24 @@ APP_CONFIG = {
     }
     ```
 
-### 🎵 豆包 TTS 常见问题
+### 🎵 豆包 TTS
 
 1. **如何配置豆包 TTS？**
 
-    配置示例、provider 选择和音色说明见上方 [🔊 TTS 配置](#-tts-配置) 的「豆包 TTS」小节。
+    1. 开通[火山引擎语音合成服务](https://www.volcengine.com/docs/6561/1871062)，获取 App ID 和 Access Key（[接入文档](https://www.volcengine.com/docs/6561/1598757?lang=zh)）
+    2. 填入配置：
+
+    ```python
+    "tts": {
+        "doubao": {
+            "app_id": "你的 App ID",
+            "access_key": "你的 Access Key",
+            "default_speaker": "zh_female_cancan_mars_bigtts",  # 默认音色，可选列表见下方
+        }
+    }
+    ```
+
+    音色列表：[火山引擎音色库](https://www.volcengine.com/docs/6561/1257544?lang=zh)
 
 2. **如何使用声音复刻？**
 

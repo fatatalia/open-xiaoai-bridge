@@ -13,7 +13,7 @@ use pyo3::Python;
 use serde_json::json;
 use std::env;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{accept_async, accept_hdr_async};
+use tokio_tungstenite::accept_async;
 
 pub struct AppServer;
 
@@ -59,30 +59,8 @@ async fn test() -> Result<(), AppError> {
 
 impl AppServer {
     pub async fn connect(stream: TcpStream) -> Result<WsStream, AppError> {
-        let expected_token = std::env::var("OPEN_XIAOAI_TOKEN").unwrap_or_default();
-        if !expected_token.is_empty() {
-            use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
-            let ws_stream = accept_hdr_async(stream, move |req: &Request, response: Response| {
-                let auth = req
-                    .headers()
-                    .get("Authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                if auth != format!("Bearer {}", expected_token) {
-                    let error: ErrorResponse = tokio_tungstenite::tungstenite::http::Response::builder()
-                        .status(401)
-                        .body(Some("Unauthorized".to_string()))
-                        .unwrap();
-                    return Err(error);
-                }
-                Ok(response)
-            })
-            .await?;
-            Ok(WsStream::Server(ws_stream))
-        } else {
-            let ws_stream = accept_async(stream).await?;
-            Ok(WsStream::Server(ws_stream))
-        }
+        let ws_stream = accept_async(stream).await?;
+        Ok(WsStream::Server(ws_stream))
     }
 
     pub async fn run() {
@@ -98,17 +76,9 @@ impl AppServer {
     }
 
     async fn handle_connection(stream: TcpStream, addr: std::net::SocketAddr) {
-        let ws_stream = match AppServer::connect(stream).await {
-            Ok(ws_stream) => ws_stream,
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("401") || msg.contains("Unauthorized") {
-                    crate::pylog!("[AppServer] ❌ 鉴权失败: {}", addr);
-                } else {
-                    crate::pylog!("[AppServer] ❌ 连接异常: {} ({})", addr, msg);
-                }
-                return;
-            }
+        let Ok(ws_stream) = AppServer::connect(stream).await else {
+            crate::pylog!("[AppServer] ❌ 连接异常: {}", addr);
+            return;
         };
         crate::pylog!("[AppServer] ✅ 已连接: {:?}", addr);
         AppServer::init(ws_stream).await;

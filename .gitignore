@@ -47,4 +47,15 @@ output/
 
 config-local.py
 
-**/models
+# ── 本地定制（2026-10-28 加入）──
+# 手工备份文件
+*.bak
+*.bak-*
+*.bak.*
+# 含明文密钥的本地配置（已 skip-worktree，双保险）
+config.py
+# 运行时状态与凭据
+openclaw/
+log/
+# 拼音模型（152M）
+g2pW/

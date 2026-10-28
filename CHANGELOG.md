@@ -2,39 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## v1.0.7 - 2026-07-14
-
-### 重点更新
-
-- 新增 OpenAI 兼容 Chat 后端，可对接任意 OpenAI 协议兼容的 LLM 服务作为对话后端。(#15)
-- 新增 Doubao（豆包）ASR provider，支持使用豆包语音识别能力。(#13 by @gao19970120)
-- 新增 FireRedASR INT8 后端支持，提供更多离线 ASR 模型选择。
-- 支持 OpenClaw 协议 v4 握手，兼容新版 OpenClaw 客户端。(#20)
-
-### 修复与优化
-
-- 修复 OpenAI 模式下自定义唤醒词路由问题。(#17)
-- 优化 MyStream 音频读取性能：改用基于 offset 的读取与惰性清理，避免每个音频帧触发 O(n) 的 memmove，降低 CPU 占用。(#22 by @法塔·艾莉娅)
-
-### Full Changelog
-
-- https://github.com/coderzc/open-xiaoai-bridge/compare/v1.0.6...v1.0.7
-
-## v1.0.6 - 2026-04-05
-
-### 重点更新
-
-- 新增 WebSocket Bearer Token 鉴权支持，设置 `OPEN_XIAOAI_TOKEN` 环境变量后，客户端须在握手时携带 `Authorization: Bearer <token>` 请求头，否则连接将被拒绝（返回 401）。未设置该变量时保持原有无鉴权行为。
-- 连接日志新增鉴权失败原因输出，方便快速定位认证问题。
-
-### 修复与优化
-
-- 修复 OpenClaw agent 事件未按 `run_id` 过滤的问题，避免多次唤醒后事件监听器持续累积导致的内存泄漏。
-
-### Full Changelog
-
-- https://github.com/coderzc/open-xiaoai-bridge/compare/v1.0.5...v1.0.6
-
 ## v1.0.5 - 2026-03-29
 
 ### 重点更新

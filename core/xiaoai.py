@@ -109,6 +109,14 @@ class XiaoAI:
 
     @classmethod
     def on_input_data(cls, data: bytes):
+        # 没人订阅音频（KWS/VAD 都被门控停掉）⇒ 当场丢弃。
+        # 关键：numpy 预处理比"读一个标志位"贵得多：
+        #   frombuffer → astype(float32)（4 倍内存展开）→ 乘法 → clip → 转回 int16 → tobytes
+        # 每 32ms 一遍。门控期间必须连它一起跳过，否则"停掉 KWS"只省了检测、
+        # 没省下数据搬移，等于白停。
+        if not GlobalStream.has_readers():
+            return
+
         audio_array = np.frombuffer(data, dtype=np.int16)
         if cls._input_gain_enabled and audio_array.size > 0:
             boosted = audio_array.astype(np.float32) * cls._input_gain
@@ -140,6 +148,7 @@ class XiaoAI:
         event_type = event_json.get("event")
 
         if not event_json.get("event"):
+            logger.debug("[XiaoAI] event_json event not: {event_json}");
             return
 
         # 记录所有事件用于调试监听退出
@@ -205,7 +214,7 @@ class XiaoAI:
                     is_final = payload.get("is_final")
                     is_vad_begin = payload.get("is_vad_begin")
 
-                    if EventManager.consume_xiaoai_asr_result(
+                    if EventManager.consume_openclaw_xiaoai_asr_result(
                         dialog_id=dialog_id,
                         text=text,
                         is_final=is_final,
@@ -214,7 +223,7 @@ class XiaoAI:
                         if dialog_id and text and is_final:
                             await cls._suppress_dialog(
                                 dialog_id,
-                                f"Bridge 接管原生 ASR",
+                                f"OpenClaw 接管原生 ASR",
                             )
                         return
                     
@@ -229,7 +238,6 @@ class XiaoAI:
                             dialog_id,
                             f"外部唤醒词接管: {text}",
                         )
-                        await EventManager.wakeup(text, "kws")
                         return
                     elif text and is_final:
                         logger.info(f"[XiaoAI] 🔥 收到指令: {text}")

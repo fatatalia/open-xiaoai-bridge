@@ -4,8 +4,6 @@ This module manages the main application flow, coordinating between:
 - XiaoAI (Xiaomi speaker service)
 - XiaoZhi (AI conversation service)
 - OpenClaw (External integration)
-- OpenAI (OpenAI-compatible chat service)
-- QwenPaw (QwenPaw personal agent workstation)
 - Audio system (VAD, KWS, Codec)
 """
 
@@ -24,8 +22,6 @@ from core.services.protocols.typing import (
     EventType,
 )
 from core.openclaw import OpenClawManager
-from core.openai import OpenAIManager
-from core.qwenpaw import QwenPawManager
 from core.services.api_server import APIServer
 
 
@@ -35,42 +31,26 @@ class MainApp:
     _instance = None
 
     @classmethod
-    def instance(
-        cls,
-        enable_xiaozhi: bool = True,
-        enable_openclaw: bool = False,
-        enable_openai: bool = False,
-        enable_qwenpaw: bool = False,
-    ):
+    def instance(cls, enable_xiaozhi: bool = True, enable_openclaw: bool = False, enable_dsh: bool = False):
         """Get singleton instance.
 
         Args:
             enable_xiaozhi: Whether to enable XiaoZhi AI connection (default: True)
-            enable_openclaw: Whether to enable OpenClaw connection (default: False)
-            enable_qwenpaw: Whether to enable QwenPaw connection (default: False)
+            enable_openclaw: Whether to enable OpenClaw WebSocket connection (default: False)
+            enable_dsh: Whether to enable dsh webhook backend (default: False)
+                        与 OpenClaw 互斥：dsh 后端走 HTTP 同步，不需要 OpenClaw 连接。
         """
         if cls._instance is None:
-            cls._instance = MainApp(
-                enable_xiaozhi=enable_xiaozhi,
-                enable_openclaw=enable_openclaw,
-                enable_openai=enable_openai,
-                enable_qwenpaw=enable_qwenpaw,
-            )
+            cls._instance = MainApp(enable_xiaozhi=enable_xiaozhi, enable_openclaw=enable_openclaw, enable_dsh=enable_dsh)
         return cls._instance
 
-    def __init__(
-        self,
-        enable_xiaozhi: bool = True,
-        enable_openclaw: bool = False,
-        enable_openai: bool = False,
-        enable_qwenpaw: bool = False,
-    ):
+    def __init__(self, enable_xiaozhi: bool = True, enable_openclaw: bool = False, enable_dsh: bool = False):
         """Initialize the main application.
 
         Args:
             enable_xiaozhi: Whether to enable XiaoZhi AI connection
             enable_openclaw: Whether to enable OpenClaw connection
-            enable_qwenpaw: Whether to enable QwenPaw connection
+            enable_dsh: Whether to enable dsh backend（无需常驻连接，仅初始化配置）
         """
         if MainApp._instance is not None:
             raise Exception("MainApp is singleton, use instance() to get instance")
@@ -82,8 +62,7 @@ class MainApp:
         # Feature flags
         self._enable_xiaozhi = enable_xiaozhi
         self._enable_openclaw = enable_openclaw
-        self._enable_openai = enable_openai
-        self._enable_qwenpaw = enable_qwenpaw
+        self._enable_dsh = enable_dsh
 
         # Device state
         self.device_state = DeviceState.IDLE
@@ -100,7 +79,6 @@ class MainApp:
         # Task queue
         self.main_tasks = []
         self.mutex = threading.Lock()
-
         # Events
         self.events = {
             EventType.SCHEDULE_EVENT: threading.Event(),
@@ -115,6 +93,19 @@ class MainApp:
         self._enable_api_server = False
 
         set_app(self)
+
+    @property
+    def enable_dsh(self) -> bool:
+        """当前是否启用 dsh 后端（独立开关，与 OpenClaw 互不耦合）。"""
+        return getattr(self, "_enable_dsh", False)
+
+    def _resolve_backend(self) -> str:
+        """当前对话后端：启用 dsh → "dsh"；否则 "openclaw"。
+
+        两个后端用独立环境变量分别控制（main.py 解析 OPENCLAW_ENABLE / DSH_ENABLE），
+        二选一，互不耦合。dsh 后端走 webhook 同步，不建立 OpenClaw WebSocket。
+        """
+        return "dsh" if self.enable_dsh else "openclaw"
 
     @property
     def protocol(self):
@@ -142,31 +133,12 @@ class MainApp:
                 "Either enable audio input or disable XiaoZhi."
             )
         
-        if not audio_input_enabled:
-            local_asr_backends = []
-            if (
-                self._enable_openclaw
-                and self.config.get_app_config("openclaw.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("OpenClaw")
-            if (
-                self._enable_openai
-                and self.config.get_app_config("openai.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("OpenAI")
-            if (
-                self._enable_qwenpaw
-                and self.config.get_app_config("qwenpaw.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("QwenPaw")
-            if local_asr_backends:
+        if not audio_input_enabled and self._enable_openclaw:
+            openclaw_input_mode = self.config.get_app_config("openclaw.input_mode", "local_asr")
+            if openclaw_input_mode == "local_asr":
                 raise RuntimeError(
-                    "Audio input is disabled (AUDIO_INPUT_ENABLE=false) but "
-                    f"{', '.join(local_asr_backends)} uses 'local_asr' mode. "
-                    "Either enable audio input, or set input_mode='xiaoai_asr' in config."
+                    "Audio input is disabled (AUDIO_INPUT_ENABLE=false) but OpenClaw uses 'local_asr' mode. "
+                    "Either enable audio input, or set openclaw.input_mode='xiaoai_asr' in config."
                 )
 
         # Create event loop thread
@@ -190,16 +162,16 @@ class MainApp:
             # Initialize XiaoZhi connection
             asyncio.run_coroutine_threadsafe(self._init_xiaozhi(), self.loop)
 
-        # Initialize OpenClaw if enabled
+        # OpenClaw 后端：建立 WebSocket 长连接
         if self._enable_openclaw:
             OpenClawManager.initialize_from_config()
             asyncio.run_coroutine_threadsafe(OpenClawManager.connect(), self.loop)
-        if self._enable_openai:
-            OpenAIManager.initialize_from_config()
-            asyncio.run_coroutine_threadsafe(OpenAIManager.connect(), self.loop)
-        if self._enable_qwenpaw:
-            QwenPawManager.initialize_from_config()
-            asyncio.run_coroutine_threadsafe(QwenPawManager.connect(), self.loop)
+
+        # dsh 后端：HTTP 同步，无长连接，仅初始化配置
+        if self._enable_dsh:
+            from core.dsh import DshManager
+
+            DshManager.initialize_from_config()
 
         # Start API Server if enabled
         if self._enable_api_server:
@@ -213,13 +185,13 @@ class MainApp:
         main_loop_thread.daemon = True
         main_loop_thread.start()
 
+        # Preload default Piper TTS voice (model permanence)
+        self._preload_tts()
+
         # Start audio services
-        if (
-            self._enable_xiaozhi
-            or self._enable_openclaw
-            or self._enable_openai
-            or self._enable_qwenpaw
-        ):
+        # 三个后端（小智 / OpenClaw / dsh）都需要 VAD + KWS：
+        # 语音入口是同一套（本地麦克风 + 唤醒词），后端只是出口不同。
+        if self._enable_xiaozhi or self._enable_openclaw or self._enable_dsh:
             # Check audio input via env var (same as Rust), default True
             # Supports: "true"/"false", "1"/"0", "yes"/"no", "on"/"off"
             audio_input_enabled = os.environ.get(
@@ -234,51 +206,68 @@ class MainApp:
             else:
                 logger.info("[MainApp] Audio input disabled (VAD/KWS not started)")
 
-            # Pre-warm local ASR only when an enabled backend is configured to use it.
-            if audio_input_enabled and (
-                (
-                    self._enable_openclaw
-                    and self.config.get_app_config("openclaw.input_mode", "local_asr")
-                    == "local_asr"
+            # Pre-warm local ASR only when OpenClaw is configured to use it
+            # and audio input is enabled.
+            if audio_input_enabled and self._enable_openclaw:
+                input_mode = self.config.get_app_config(
+                    "openclaw.input_mode",
+                    "local_asr",
                 )
-                or (
-                    self._enable_openai
-                    and self.config.get_app_config(
-                        "openai.input_mode", "local_asr"
-                    )
-                    == "local_asr"
-                )
-                or (
-                    self._enable_qwenpaw
-                    and self.config.get_app_config(
-                        "qwenpaw.input_mode", "local_asr"
-                    )
-                    == "local_asr"
-                )
-            ):
-                from core.services.audio.asr import ASRService
+                if input_mode == "local_asr":
+                    from core.services.audio.asr.sherpa import SherpaASR
 
-                threading.Thread(
-                    target=ASRService.ensure_loaded,
-                    daemon=True,
-                    name="asr-warmup",
-                ).start()
+                    threading.Thread(
+                        target=SherpaASR._ensure_loaded,
+                        daemon=True,
+                        name="asr-warmup",
+                    ).start()
 
     def _run_event_loop(self):
         """Run asyncio event loop in separate thread."""
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
+    def _preload_tts(self):
+        """Preload default Piper TTS voice at startup to avoid cold-start latency.
+
+        仅当配置里确实会用到 Piper 时才预加载（2026-10-23 改回小爱原生 TTS 后，
+        继续无条件加载 piper 模型纯属浪费内存和启动时间）。
+        """
+        try:
+            speakers = set()
+            oc = self.config.get_app_config("openclaw", {}) or {}
+            dsh = self.config.get_app_config("dsh", {}) or {}
+            if oc.get("tts_speaker"):
+                speakers.add(oc["tts_speaker"])
+            if dsh.get("tts_speaker"):
+                speakers.add(dsh["tts_speaker"])
+            speakers.update((oc.get("agent_tts_speakers") or {}).values())
+
+            if "piper" not in speakers:
+                logger.info(
+                    f"[App] TTS preload skipped: 当前 tts_speaker={sorted(speakers)}，未使用 piper"
+                )
+                return
+
+            from core.services.tts.piper import PiperTTS
+            cfg = self.config.get_app_config("tts.piper", {})
+            voice = cfg.get("voice", "xiao_ya")
+            asyncio.run_coroutine_threadsafe(
+                PiperTTS.preload(voice), self.loop
+            )
+        except Exception as e:
+            logger.warning(f"[App] TTS preload skipped: {e}")
+
     def _start_config_watcher(self):
         """Start config file watcher thread."""
         if self.config_watch_thread and self.config_watch_thread.is_alive():
             return
 
-        self.config_watch_thread = threading.Thread(
-            target=self._watch_config_file,
-            daemon=True,
-        )
-        self.config_watch_thread.start()
+        #self.config_watch_thread = threading.Thread(
+        #    target=self._watch_config_file,
+        #    daemon=True,
+        #)
+        #self.config_watch_thread.start()
 
     def _watch_config_file(self):
         """Poll config file for changes and hot-reload."""
@@ -382,14 +371,6 @@ class MainApp:
             asyncio.run_coroutine_threadsafe(
                 OpenClawManager.close(), self.loop
             )
-        if OpenAIManager.is_enabled():
-            asyncio.run_coroutine_threadsafe(
-                OpenAIManager.close(), self.loop
-            )
-        if QwenPawManager.is_enabled():
-            asyncio.run_coroutine_threadsafe(
-                QwenPawManager.close(), self.loop
-            )
 
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -449,69 +430,3 @@ class MainApp:
             session_key: New session key (e.g. "agent:user123:my-app").
         """
         OpenClawManager.set_session_key(session_key)
-
-    async def send_to_openai(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to the OpenAI-compatible service."""
-        try:
-            full_text = text
-            if OpenAIManager._rule_prompt_for_skill:
-                full_text = text + "\n" + OpenAIManager._rule_prompt_for_skill
-            return await OpenAIManager.send(full_text, wait_response=wait_response)
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenAI 兼容服务失败: {type(e).__name__}: {e}")
-            return None
-
-    async def send_to_openai_and_play_reply(
-        self,
-        text: str,
-        wait_response: bool = False,
-    ) -> str | None:
-        """Send message to the OpenAI-compatible service and play the reply."""
-        try:
-            full_text = text
-            if OpenAIManager._rule_prompt:
-                full_text = text + "\n" + OpenAIManager._rule_prompt
-            return await OpenAIManager.send_and_play_reply(
-                full_text,
-                wait_response=wait_response,
-            )
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenAI 兼容服务失败: {type(e).__name__}: {e}")
-            return None
-
-    def set_openai_session_key(self, session_key: str):
-        """Override the OpenAI-compatible service session key at runtime."""
-        OpenAIManager.set_session_key(session_key)
-
-    async def send_to_qwenpaw(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to QwenPaw."""
-        try:
-            full_text = text
-            if QwenPawManager._rule_prompt_for_skill:
-                full_text = text + "\n" + QwenPawManager._rule_prompt_for_skill
-            return await QwenPawManager.send(full_text, wait_response=wait_response)
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 QwenPaw 失败: {type(e).__name__}: {e}")
-            return None
-
-    async def send_to_qwenpaw_and_play_reply(
-        self,
-        text: str,
-        wait_response: bool = False,
-    ) -> str | None:
-        """Send message to QwenPaw and play the reply."""
-        try:
-            full_text = text
-            if QwenPawManager._rule_prompt:
-                full_text = text + "\n" + QwenPawManager._rule_prompt
-            return await QwenPawManager.send_and_play_reply(
-                full_text,
-                wait_response=wait_response,
-            )
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 QwenPaw 失败: {type(e).__name__}: {e}")
-            return None
-
-    def set_qwenpaw_session_key(self, session_key: str):
-        """Override the QwenPaw session key at runtime."""
-        QwenPawManager.set_session_key(session_key)

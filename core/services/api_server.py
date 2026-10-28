@@ -12,8 +12,11 @@ from typing import Any
 
 import open_xiaoai_server
 from aiohttp import web
-from core.ref import get_speaker, get_xiaoai
+from core.ref import get_speaker, get_vad, get_xiaoai
+from core.services.audio.asr.sherpa import SherpaASR
+from core.services.audio.gate import AudioGate
 from core.services.tts.doubao import DoubaoTTS
+from core.services.tts.filler import FillerPlayer
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
@@ -39,9 +42,15 @@ class APIServer:
         self.app.router.add_post("/api/wakeup", self.handle_wakeup)
         self.app.router.add_post("/api/interrupt", self.handle_stop)
         self.app.router.add_get("/api/health", self.handle_health)
+        # 音频输入门控（电视开着时彻底停掉 KWS/VAD）
+        self.app.router.add_post("/api/audio/gate", self.handle_audio_gate)
+        self.app.router.add_get("/api/audio/gate", self.handle_audio_gate_status)
         # TTS endpoints
         self.app.router.add_post("/api/tts/doubao", self.handle_tts_doubao)
         self.app.router.add_get("/api/tts/doubao_voices", self.handle_tts_voices)
+        self.app.router.add_post("/api/tts/moss", self.handle_tts_moss)
+        self.app.router.add_post("/api/tts/piper", self.handle_tts_piper)
+        self.app.router.add_post("/api/asr/listen", self.handle_asr_listen)
 
     def _create_background_task(
         self,
@@ -387,6 +396,52 @@ class APIServer:
             }
         })
 
+    async def handle_audio_gate(self, request: web.Request) -> web.Response:
+        """
+        POST /api/audio/gate
+        开关语音输入门控。closed=true 时 KWS/VAD 彻底停摆，
+        麦克风数据到 on_input_data() 就直接丢弃，不做任何处理。
+
+        Request body:
+            {
+                "closed": true,          # required
+                "reason": "tv_on"        # optional，仅用于日志
+            }
+
+        典型调用者：HA 自动化（电视开/关）、手动快捷指令。
+        """
+        try:
+            data = await request.json() if request.can_read_body else {}
+        except Exception:
+            return web.json_response(
+                {"success": False, "error": "invalid JSON body"}, status=400
+            )
+
+        if "closed" not in data:
+            return web.json_response(
+                {"success": False, "error": "missing required field: closed"},
+                status=400,
+            )
+
+        closed = bool(data.get("closed"))
+        reason = str(data.get("reason") or "")
+        gate = AudioGate.instance()
+        changed = gate.close(reason) if closed else gate.open(reason)
+
+        return web.json_response({
+            "success": True,
+            "data": {
+                "changed": changed,
+                "closed": gate.closed,
+                "reason": reason,
+            },
+        })
+
+    async def handle_audio_gate_status(self, request: web.Request) -> web.Response:
+        """GET /api/audio/gate —— 查询当前门控状态。"""
+        gate = AudioGate.instance()
+        return web.json_response({"success": True, "data": gate.status()})
+
     async def handle_tts_doubao(self, request: web.Request) -> web.Response:
         """
         POST /api/tts/doubao
@@ -613,6 +668,321 @@ class APIServer:
             })
         except Exception as e:
             logger.error(f"[APIServer] Error getting voices: {e}")
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500
+            )
+
+    async def handle_tts_moss(self, request: web.Request) -> web.Response:
+        """
+        POST /api/tts/moss
+        Synthesize text using local MOSS-TTS-Nano and play it
+
+        Request body:
+            {
+                "text": "你好",         # required
+                "blocking": false        # optional, default false
+            }
+        """
+        try:
+            data = await request.json()
+            text = data.get("text")
+
+            if not text:
+                return web.json_response(
+                    {"success": False, "error": "Missing required field: text"},
+                    status=400
+                )
+
+            moss_config = self.config.get_app_config("tts.moss", {})
+            moss_url = moss_config.get("url", "http://localhost:18083")
+            moss_speaker = data.get("voice") or data.get("speaker") or moss_config.get("speaker", "demo-1")
+            blocking = data.get("blocking", False)
+
+            speaker = get_speaker()
+            if not speaker:
+                return web.json_response(
+                    {"success": False, "error": "Speaker not initialized"},
+                    status=503
+                )
+
+            import aiohttp
+
+            async def synthesize_and_play_moss():
+                async with aiohttp.ClientSession() as session:
+                    start_resp = await session.post(
+                        f"{moss_url}/api/generate-stream/start",
+                        data={"text": text, "demo_id": moss_speaker, "max_new_frames": "150", "realtime_streaming_decode": "True"},
+                        timeout=aiohttp.ClientTimeout(total=120)
+                    )
+                    result = await start_resp.json()
+                    stream_id = result.get("stream_id")
+
+                    if not stream_id:
+                        logger.error(f"[APIServer] MOSS TTS failed to start stream: {result}")
+                        return
+
+                    chunks = []
+                    async with session.get(
+                        f"{moss_url}/api/generate-stream/{stream_id}/audio"
+                    ) as audio_resp:
+                        async for chunk in audio_resp.content.iter_chunked(8192):
+                            if chunk:
+                                chunks.append(chunk)
+
+                    if chunks:
+                        full_pcm = b"".join(chunks)
+                        logger.info(f"[MOSS] synthesis complete: {len(full_pcm)}B, playing...")
+                        await speaker.play(buffer=full_pcm)
+
+                    await session.get(f"{moss_url}/api/generate-stream/{stream_id}/close")
+
+            if blocking:
+                await synthesize_and_play_moss()
+            else:
+                asyncio.create_task(synthesize_and_play_moss())
+
+            return web.json_response({
+                "success": True,
+                "message": f"MOSS TTS: {text[:50]}..." if len(text) > 50 else f"MOSS TTS: {text}",
+            })
+
+        except Exception as e:
+            logger.error(f"[APIServer] MOSS TTS error: {e}")
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500
+            )
+
+    async def handle_tts_piper(self, request: web.Request) -> web.Response:
+        """
+        POST /api/tts/piper
+        Synthesize text using Piper local TTS and play it (subprocess + raw PCM)
+
+        Request body:
+            {
+                "text": "你好",         # required
+                "voice": "xiao_ya",      # optional, default from config
+                "blocking": false        # optional, default false
+            }
+        """
+        try:
+            data = await request.json()
+            text = data.get("text")
+
+            if not text:
+                return web.json_response(
+                    {"success": False, "error": "Missing required field: text"},
+                    status=400
+                )
+
+            piper_config = self.config.get_app_config("tts.piper", {})
+            voice = data.get("voice") or piper_config.get("voice", "xiao_ya")
+            blocking = data.get("blocking", False)
+
+            speaker = get_speaker()
+            if not speaker:
+                return web.json_response(
+                    {"success": False, "error": "Speaker not initialized"},
+                    status=503
+                )
+
+            from core.services.tts.piper import PiperTTS
+            piper = PiperTTS(piper_config)
+
+            async def synthesize_and_play():
+                filler = FillerPlayer(speaker)
+                try:
+                    # 开始 piper 合成前启动填充语音
+                    await filler.start()
+
+                    chunks = []
+                    async for chunk in piper.synthesize_stream(text, voice=voice):
+                        if chunk:
+                            chunks.append(chunk)
+                finally:
+                    # 合成完成/异常 → 停止填充语音
+                    await filler.stop()
+
+                if chunks:
+                    full_pcm = b"".join(chunks)
+                    logger.info(f"[Piper] synthesis complete: {len(full_pcm)}B, playing...")
+                    await speaker.play(buffer=full_pcm)
+                    # 等待 TTS 播完后再清残，避免 filler 残留缓冲继续播放
+                    duration_s = len(full_pcm) / 44100  # 22050Hz 16bit mono
+                    await asyncio.sleep(duration_s + 0.3)
+                    await speaker.stop_device_audio()
+                else:
+                    logger.warning("[Piper] no audio chunks generated, nothing to play")
+
+            if blocking:
+                await synthesize_and_play()
+            else:
+                asyncio.create_task(synthesize_and_play())
+
+            return web.json_response({
+                "success": True,
+                "voice": voice,
+                "message": f"Piper TTS ({voice}): {text[:50]}..." if len(text) > 50 else f"Piper TTS ({voice}): {text}",
+            })
+
+        except Exception as e:
+            logger.error(f"[APIServer] Piper TTS error: {e}")
+            return web.json_response(
+                {"success": False, "error": str(e)},
+                status=500
+            )
+
+    async def handle_asr_listen(self, request: web.Request) -> web.Response:
+        """
+        POST /api/asr/listen
+        Enter wakeup-like state, record speech, and return recognized text.
+
+        This replicates the listening half of OpenClawConversationController
+        without sending anything to OpenClaw — just VAD → ASR → return text.
+
+        Request body:
+            {
+                "timeout": 20,            # optional, max seconds to wait for speech (default 20)
+                "silent": false            # optional, skip notify beep (default false)
+            }
+
+        Response:
+            {
+                "success": true,
+                "text": "今天天气怎么样",
+                "duration_ms": 3200,       # recorded audio duration in ms
+                "timeout": false
+            }
+
+        On timeout (no speech detected):
+            {
+                "success": true,
+                "text": "",
+                "duration_ms": 0,
+                "timeout": true
+            }
+        """
+        try:
+            data = await request.json() if request.can_read_body else {}
+            timeout = int(data.get("timeout", 20))
+            silent = data.get("silent", False)
+
+            vad = get_vad()
+            speaker = get_speaker()
+            if not vad:
+                return web.json_response(
+                    {"success": False, "error": "VAD not initialized"},
+                    status=503
+                )
+
+            loop = asyncio.get_running_loop()
+            recording_frames: list[bytes] = []
+            is_recording = False
+            vad_future: asyncio.Future = loop.create_future()
+
+            from core.wakeup_session import EventManager
+
+            # --- Stop playback, prepare mic ---
+            if speaker:
+                await speaker.stop_device_audio()
+
+            import open_xiaoai_server
+            await open_xiaoai_server.stop_recording()
+
+            if not silent and speaker and hasattr(speaker, 'play'):
+                # Short notification beep
+                notify_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..", "assets", "sounds", "tts_notify.mp3",
+                )
+                if os.path.isfile(notify_path):
+                    with open(notify_path, "rb") as f:
+                        mp3_data = f.read()
+                    pcm = open_xiaoai_server.decode_audio(mp3_data, format="mp3", sample_rate=24000)
+                    if pcm:
+                        await speaker.play(buffer=pcm)
+                        duration = len(pcm) / (24000 * 2)
+                        await asyncio.sleep(duration)
+
+            await open_xiaoai_server.start_recording()
+
+            # --- VAD hooks (same pattern as OpenClawConversationController._wait_for_speech) ---
+            original_on_speech = EventManager.on_speech
+            original_on_silence = EventManager.on_silence
+
+            _orig_handle_speech = vad._handle_speech_frame
+            _orig_handle_silence = vad._handle_silence_frame
+
+            def _on_speech_hook(speech_buffer: bytes):
+                nonlocal is_recording
+                recording_frames.append(speech_buffer)
+                is_recording = True
+                logger.debug(f"[ASR API] VAD speech detected, buffer size: {len(speech_buffer)}")
+                vad.resume("silence")
+
+            def _on_silence_hook():
+                nonlocal is_recording
+                is_recording = False
+                logger.debug(f"[ASR API] VAD silence detected, total {sum(len(f) for f in recording_frames)} bytes")
+                if vad_future and not vad_future.done():
+                    loop.call_soon_threadsafe(
+                        vad_future.set_result, b"".join(recording_frames)
+                    )
+
+            def _recording_speech_frame(frames):
+                if is_recording:
+                    recording_frames.append(bytes(frames))
+                _orig_handle_speech(frames)
+
+            def _recording_silence_frame(frames):
+                if is_recording:
+                    recording_frames.append(bytes(frames))
+                _orig_handle_silence(frames)
+
+            EventManager.on_speech = _on_speech_hook
+            EventManager.on_silence = _on_silence_hook
+            vad._handle_speech_frame = _recording_speech_frame
+            vad._handle_silence_frame = _recording_silence_frame
+
+            try:
+                vad.resume("speech")
+                speech_bytes = await asyncio.wait_for(vad_future, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.debug("[ASR API] Timeout, no speech detected")
+                vad.pause()
+                return web.json_response({
+                    "success": True,
+                    "text": "",
+                    "duration_ms": 0,
+                    "timeout": True,
+                })
+            finally:
+                EventManager.on_speech = original_on_speech
+                EventManager.on_silence = original_on_silence
+                vad._handle_speech_frame = _orig_handle_speech
+                vad._handle_silence_frame = _orig_handle_silence
+
+            # --- ASR ---
+            duration_ms = int(len(speech_bytes) / (16000 * 2) * 1000)
+            text = SherpaASR.asr(speech_bytes, sample_rate=16000)
+
+            logger.info(f"[ASR API] Recognized ({duration_ms}ms): {text!r}")
+
+            return web.json_response({
+                "success": True,
+                "text": text,
+                "duration_ms": duration_ms,
+                "timeout": False,
+            })
+
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"success": False, "error": "Invalid JSON"},
+                status=400
+            )
+        except Exception as e:
+            logger.error(f"[ASR API] Error: {type(e).__name__}: {e}")
             return web.json_response(
                 {"success": False, "error": str(e)},
                 status=500

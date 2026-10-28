@@ -29,10 +29,24 @@ class _KWS:
         # 设置帧大小为 512 以兼容 Silero VAD
         self.frame_size = 512
         self.sample_rate = 16000
-        self.frame_duration_ms = (self.frame_size * 1000) / self.sample_rate  # 32ms per frame
+        self.frame_duration_ms = (self.frame_size * 1000) / self.sample_rate
+
+        # 性能采样（诊断用，不改判定逻辑）
+        # 目的：确认 VAD / KWS 单帧耗时是否超过 frame_duration_ms(32ms) 的实时预算
+        self._perf_vad = []
+        self._perf_kws = []
+        self._perf_window = 100  # 32ms per frame
 
         self.apply_runtime_config()
         self.config_manager.add_reload_listener(self._on_config_reload)
+
+        # 门控闸门。set = 放行，clear = 阻塞。
+        # 用 Event 而不是 `paused` 标志位 + sleep 轮询：清除后检测线程阻塞在
+        # wait() 上，由内核挂起，真正 0 CPU；而轮询写法每秒要醒 100 次、每次都
+        # 从缓冲区空读一遍。看电视时语音根本不该工作，没必要付这份钱。
+        self._gate_block = threading.Event()
+        self._gate_block.set()
+        self._suspended = False
 
     def apply_runtime_config(self):
         """同步最新 KWS 相关配置。"""
@@ -77,10 +91,77 @@ class _KWS:
     def resume(self):
         self.paused = False
 
+    def suspend(self, reason: str = ""):
+        """门控关闭：彻底停止关键词唤醒，连音频订阅都退掉。
+
+        与 pause() 的区别：
+        - pause() 只设标志位，检测线程仍每秒空转 100 次，缓冲区还会继续被写入
+        - suspend() 注销 reader（数据不再进这个 stream）+ 阻塞检测线程（0 CPU）
+        """
+        if getattr(self, "_suspended", False):
+            return
+        self._suspended = True
+        self.paused = True
+        self._gate_block.clear()          # 先闸住线程，再断数据源
+        stream = getattr(self, "stream", None)
+        if stream is not None:
+            try:
+                stream.stop_stream()      # unregister_reader + 清缓冲 + 归零读偏移
+            except Exception as exc:
+                logger.warning(f"[KWS] suspend 时停止音频流失败: {exc}")
+        logger.kws_event(
+            "关键词唤醒已暂停", reason or "音频门控关闭（不再接收/处理麦克风数据）"
+        )
+
+    def unsuspend(self, reason: str = ""):
+        """门控打开：恢复关键词唤醒。"""
+        if not getattr(self, "_suspended", False):
+            return
+        self._suspended = False
+        stream = getattr(self, "stream", None)
+        if stream is not None:
+            try:
+                stream.start_stream()     # 重新注册为 reader
+            except Exception as exc:
+                logger.warning(f"[KWS] unsuspend 时恢复音频流失败: {exc}")
+        self.paused = False
+        self._gate_block.set()            # 放行检测线程
+        logger.kws_event("关键词唤醒已恢复", reason or "音频门控打开")
+
+    def _flush_perf(self):
+        """每 100 帧输出一次 VAD / KWS 单帧耗时分布（诊断用）。"""
+        def _pct(vals, p):
+            if not vals:
+                return 0.0
+            s = sorted(vals)
+            idx = min(int(len(s) * p / 100), len(s) - 1)
+            return s[idx]
+
+        vad = self._perf_vad
+        kws = self._perf_kws
+        budget = self.frame_duration_ms
+        logger.info(
+            f"[性能] 最近 {len(vad)} 帧 | "
+            f"VAD p50={_pct(vad, 50):.1f} p95={_pct(vad, 95):.1f} max={max(vad):.1f}ms | "
+            f"KWS n={len(kws)} "
+            + (
+                f"p50={_pct(kws, 50):.1f} p95={_pct(kws, 95):.1f} max={max(kws):.1f}ms"
+                if kws else "未触发"
+            )
+            + f" | 实时预算 {budget:.0f}ms",
+            module="KWS",
+        )
+        self._perf_vad.clear()
+        self._perf_kws.clear()
+
     def _detection_loop(self):
         SherpaOnnx.start()
         self.stream.start_stream()
         while True:
+            # 门控闸门：暂停期间阻塞在此，由内核挂起，0 CPU、0 唤醒。
+            # 恢复靠 unsuspend() 里的 set() 唤醒，所以不需要超时轮询。
+            self._gate_block.wait()
+
             # 读取缓冲区音频数据
             frames = self.stream.read(self.frame_size)
             if len(frames) != self.frame_size * 2:
@@ -101,7 +182,11 @@ class _KWS:
                 continue
 
             # 先进行 VAD 检测
+            _t_vad = time.perf_counter()
             speech_prob = Silero.vad(frames, self.sample_rate) or 0
+            self._perf_vad.append((time.perf_counter() - _t_vad) * 1000)
+            if len(self._perf_vad) >= self._perf_window:
+                self._flush_perf()
             is_speech = speech_prob >= self.vad_threshold
             
             if is_speech:
@@ -114,7 +199,9 @@ class _KWS:
                 self.vad_silence_frames = 0
                 
                 # 只在有语音时才进行 KWS 检测
+                _t_kws = time.perf_counter()
                 result = SherpaOnnx.kws(frames)
+                self._perf_kws.append((time.perf_counter() - _t_kws) * 1000)
                 if result:
                     logger.wakeup(result, module="KWS")
                     self.on_message(result)
@@ -130,7 +217,9 @@ class _KWS:
                     # 在激活状态下，允许一定的静音间隙
                     if self.vad_silence_frames <= self.vad_min_silence_frames:
                         # 继续将音频送入 KWS，允许短暂的静音
+                        _t_kws = time.perf_counter()
                         result = SherpaOnnx.kws(frames)
+                        self._perf_kws.append((time.perf_counter() - _t_kws) * 1000)
                         if result:
                             logger.wakeup(result, module="KWS")
                             self.on_message(result)

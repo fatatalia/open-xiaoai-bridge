@@ -39,6 +39,12 @@ class _VAD:
         self.apply_runtime_config()
         self.config_manager.add_reload_listener(self._on_config_reload)
 
+        # 门控闸门（与 KWS 同构）：set = 放行，clear = 阻塞检测线程。
+        # 空闲时 VAD 也在持续读流 + 跑 Silero 推理，看电视期间这份开销应该归零。
+        self._gate_block = threading.Event()
+        self._gate_block.set()
+        self._gate_active = False
+
     def apply_runtime_config(self):
         """同步最新 VAD 配置。"""
         config = self.config_manager.get_app_config("vad", {})
@@ -74,19 +80,53 @@ class _VAD:
         self._reset_state()
         self.stream.stop_stream()
 
+    def suspend(self, reason: str = ""):
+        """门控关闭：彻底停掉 VAD（注销 reader + 阻塞检测线程）。"""
+        if self._gate_active:
+            return
+        self._gate_active = True
+        self._gate_block.clear()          # 先闸住线程
+        self.paused = True
+        self._reset_state()
+        if self.stream is not None:
+            try:
+                self.stream.stop_stream()
+            except Exception as exc:
+                logger.warning(f"[VAD] suspend 时停止音频流失败: {exc}")
+        logger.vad_event("语音活动检测已暂停", reason or "音频门控关闭")
+
+    def unsuspend(self, reason: str = ""):
+        """门控打开：恢复 VAD 到空闲监听态。"""
+        if not self._gate_active:
+            return
+        self._gate_active = False
+        if self.stream is not None:
+            try:
+                self.stream.start_stream()
+            except Exception as exc:
+                logger.warning(f"[VAD] unsuspend 时恢复音频流失败: {exc}")
+        self.paused = False
+        self._reset_state()
+        self._gate_block.set()
+        logger.vad_event("语音活动检测已恢复", reason or "音频门控打开")
+
     def resume(self, target: str):
         """恢复VAD检测"""
+        if self._gate_active:
+            # 门控期间不允许被对话流程强行拉起来
+            logger.debug("[VAD] resume 被门控忽略（音频门控处于关闭状态）")
+            return
         self.paused = False
         self.target = target
         self._reset_state()
-        self.stream.clear_input()  # discard stale audio + reset read cursor
+        self.stream.input_bytes.clear()  # discard stale audio data
+        self.stream._read_offset = 0     # 清缓冲必须同步清读偏移，见 stop_stream() 注释
         self.stream.start_stream()
+        self._gate_block.set()
 
     def _handle_speech_frame(self, frames):
         """处理语音帧"""
-        # speech_count/silence_count are measured in samples (int16 => 2 bytes
-        # per sample) so they can be compared against duration_ms * rate / 1000.
-        self.speech_count += len(frames) // 2
+        self.speech_count += len(frames)
         self.silence_count = 0
 
         if self.target == "speech":
@@ -108,9 +148,7 @@ class _VAD:
 
     def _handle_silence_frame(self, frames):
         """处理静音帧"""
-        # Count in samples, not bytes (int16 => 2 bytes/sample), to match the
-        # min_silence_duration * rate / 1000 threshold below.
-        self.silence_count += len(frames) // 2
+        self.silence_count += len(frames)
         self.speech_count = 0
 
         if self.target == "speech":
@@ -168,6 +206,10 @@ class _VAD:
     def _detection_loop(self):
         """VAD检测主循环"""
         while True:
+            # 门控闸门：暂停期间阻塞在此，内核挂起，0 CPU、0 唤醒。
+            # 放在最前，避免门控期间还要每秒醒 10 次去查 paused 标志。
+            self._gate_block.wait()
+
             # 如果暂停或者音频流未初始化，则跳过
             if self.paused or not self.stream:
                 time.sleep(0.1)
